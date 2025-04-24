@@ -7,9 +7,7 @@ This project allows users to upload an image or take a real-time photo using a w
 - **Image Upload:** Users can upload an image from their device.
 - **Webcam Capture:** Users can take real-time photos using their webcam.
 - **Deepfake Detection:** The system analyzes the image to determine if it's a deepfake or a real image.
-- **Responsive Design:** The app is fully responsive, ensuring a smooth user experience on all devices.
-- **Animation:** The dashed border around the image upload area moves continuously using **Framer Motion**.
-
+- **Accuracy-67%
 ## Tech Stack
 
 - **Frontend:** React, Tailwind CSS, Framer Motion
