@@ -1,50 +1,71 @@
-# 1) Register AVIF support for Pillow
-import pillow_heif
-pillow_heif.register_avif_opener()
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from transformers import ViTImageProcessor, ViTForImageClassification  # fixed this import
+from transformers import CLIPProcessor, CLIPModel
 from PIL import Image, UnidentifiedImageError
 import torch
+import pillow_heif
+import traceback
+
+# Register AVIF support
+pillow_heif.register_avif_opener()
 
 app = Flask(__name__)
-CORS(app)
 
-# Load model and processor once
-model = ViTForImageClassification.from_pretrained("prithivMLmods/Deepfake-Detection-Exp-02-22")
-processor = ViTImageProcessor.from_pretrained("prithivMLmods/Deepfake-Detection-Exp-02-22")  # fixed variable name
+# 🔓 CORS setup — allow your React/Vite dev server origin
+CORS(app, resources={r"/analyze-image": {"origins": "http://localhost:5173"}})
 
-@app.route("/analyze-image", methods=["POST"])
+# Device & model
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+MODEL_NAME = "openai/clip-vit-base-patch16"
+processor = CLIPProcessor.from_pretrained(MODEL_NAME)
+model     = CLIPModel.from_pretrained(MODEL_NAME).to(device).eval()
+
+# Refined labels for deepfake detection
+LABELS = [
+    "A real image of a human being taken with a camera (no manipulation)",
+    "A fake or AI-generated image (deepfake)"
+]
+
+@app.route("/analyze-image", methods=["POST", "OPTIONS"])
 def analyze_image():
-    app.logger.info(f"FILES KEYS: {list(request.files.keys())}")
+    # Preflight (OPTIONS) requests are handled by flask-cors automatically
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
 
     if "image" not in request.files:
-        return jsonify({"error": "Image file required"}), 400
+        return jsonify({"error": "Image file is required"}), 400
 
-    file = request.files["image"]
-    app.logger.info(f"Received file: {file.filename}")
-
-    # Try Pillow to open image
+    f = request.files["image"]
     try:
-        img = Image.open(file).convert("RGB")
-    except UnidentifiedImageError as e:
-        app.logger.exception("Pillow cannot open image")
+        img = Image.open(f).convert("RGB")
+    except UnidentifiedImageError:
         return jsonify({"error": "Unsupported or corrupted image"}), 400
 
     try:
-        # Preprocess and run model inference
-        inputs = processor(images=img, return_tensors="pt")  # fixed variable name
+        # 1) Preprocess the image and text
+        inputs = processor(text=LABELS, images=img, return_tensors="pt", padding=True)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        # 2) Run inference
         with torch.no_grad():
             outputs = model(**inputs)
-        idx = outputs.logits.argmax(-1).item()
-        label = model.config.id2label[idx]
+
+        logits = outputs.logits_per_image  # Shape: [1, 2] (real, fake)
+        probs = logits.softmax(dim=-1)[0].tolist()  # Convert to list for easier manipulation
+
+        # 3) Get the best prediction (real or fake)
+        best_idx = int(torch.argmax(logits, dim=-1).item())
+        best_label = "Real" if best_idx == 0 else "Fake"
+        confidence = round(probs[best_idx] * 100, 2)
+
+        return jsonify({
+            "result": best_label,
+            "confidence": confidence,
+            "labels": { "0": LABELS[0], "1": LABELS[1] }
+        })
     except Exception as e:
-        app.logger.exception("Model inference failed")
+        traceback.print_exc()
         return jsonify({"error": "Model inference failed", "details": str(e)}), 500
 
-    app.logger.info(f"Predicted label: {label}")
-    return jsonify({"result": label})
-
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=9000)
+    app.run(host="0.0.0.0", port=9000, debug=True)
